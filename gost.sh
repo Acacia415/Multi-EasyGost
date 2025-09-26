@@ -2,10 +2,15 @@
 Green_font_prefix="\033[32m" && Red_font_prefix="\033[31m" && Green_background_prefix="\033[42;37m" && Font_color_suffix="\033[0m"
 Info="${Green_font_prefix}[信息]${Font_color_suffix}"
 Error="${Red_font_prefix}[错误]${Font_color_suffix}"
-shell_version="1.1.1"
+shell_version="1.2.1"
 ct_new_ver="2.11.2" # 2.x 不再跟随官方更新
 gost_conf_path="/etc/gost/config.json"
 raw_conf_path="/etc/gost/rawconf"
+backup_path="/root/gost_backups" # 新增：备份文件存放目录
+
+# 新增：版本比较函数 (ver1 > ver2)
+version_gt() { test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"; }
+
 function checknew() {
   checknew=$(gost -V 2>&1 | awk '{print $2}')
   # check_new_ver
@@ -81,12 +86,31 @@ function check_nor_file() {
   rm -rf "$(pwd)"/gost
   rm -rf "$(pwd)"/gost.service
   rm -rf "$(pwd)"/config.json
-  rm -rf /etc/gost
+  # 修改：不删除现有配置，只清理临时文件
+  # rm -rf /etc/gost
   rm -rf /usr/lib/systemd/system/gost.service
   rm -rf /usr/bin/gost
 }
+function backup_config() {
+  # 新增：备份现有配置
+  if [[ -d /etc/gost ]]; then
+    echo -e "${Info} 检测到现有配置，正在备份..."
+    cp -r /etc/gost /tmp/gost_backup_$(date +%Y%m%d_%H%M%S)
+  fi
+}
+function restore_config() {
+  # 新增：恢复配置的函数
+  latest_backup=$(ls -t /tmp/gost_backup_* 2>/dev/null | head -1)
+  if [[ -n "$latest_backup" ]]; then
+    echo -e "${Info} 安装失败，正在恢复原有配置..."
+    rm -rf /etc/gost
+    cp -r "$latest_backup" /etc/gost
+    echo -e "${Info} 配置已恢复"
+  fi
+}
 function Install_ct() {
   check_root
+  backup_config # 新增：安装前备份配置
   check_nor_file
   Installation_dependency
   check_file
@@ -98,36 +122,72 @@ function Install_ct() {
   if [[ ${addyn} == [Yy] ]]; then
     rm -rf gost-linux-"$bit"-"$ct_new_ver".gz
     wget --no-check-certificate https://gotunnel.oss-cn-shenzhen.aliyuncs.com/gost-linux-"$bit"-"$ct_new_ver".gz
+    if [[ $? -ne 0 ]]; then
+      echo -e "${Error} gost下载失败"
+      restore_config # 新增：下载失败时恢复配置
+      return 1
+    fi
     gunzip gost-linux-"$bit"-"$ct_new_ver".gz
+    if [[ $? -ne 0 ]]; then
+      echo -e "${Error} gost解压失败"
+      restore_config # 新增：解压失败时恢复配置
+      return 1
+    fi
     mv gost-linux-"$bit"-"$ct_new_ver" gost
     mv gost /usr/bin/gost
     chmod -R 777 /usr/bin/gost
     wget --no-check-certificate https://gotunnel.oss-cn-shenzhen.aliyuncs.com/gost.service && chmod -R 777 gost.service && mv gost.service /usr/lib/systemd/system
-    mkdir /etc/gost && wget --no-check-certificate https://gotunnel.oss-cn-shenzhen.aliyuncs.com/config.json && mv config.json /etc/gost && chmod -R 777 /etc/gost
+    if [[ ! -d /etc/gost ]]; then
+      mkdir /etc/gost
+    fi
+    # 修改：只有在没有配置文件时才下载默认配置
+    if [[ ! -f /etc/gost/config.json ]]; then
+      wget --no-check-certificate https://gotunnel.oss-cn-shenzhen.aliyuncs.com/config.json && mv config.json /etc/gost
+    fi
+    chmod -R 777 /etc/gost
   else
     rm -rf gost-linux-"$bit"-"$ct_new_ver".gz
     wget --no-check-certificate https://github.com/ginuerzh/gost/releases/download/v"$ct_new_ver"/gost-linux-"$bit"-"$ct_new_ver".gz
+    if [[ $? -ne 0 ]]; then
+      echo -e "${Error} gost下载失败"
+      restore_config # 新增：下载失败时恢复配置
+      return 1
+    fi
     gunzip gost-linux-"$bit"-"$ct_new_ver".gz
+    if [[ $? -ne 0 ]]; then
+      echo -e "${Error} gost解压失败"
+      restore_config # 新增：解压失败时恢复配置
+      return 1
+    fi
     mv gost-linux-"$bit"-"$ct_new_ver" gost
     mv gost /usr/bin/gost
     chmod -R 777 /usr/bin/gost
     wget --no-check-certificate https://raw.githubusercontent.com/KANIKIG/Multi-EasyGost/master/gost.service && chmod -R 777 gost.service && mv gost.service /usr/lib/systemd/system
-    mkdir /etc/gost && wget --no-check-certificate https://raw.githubusercontent.com/KANIKIG/Multi-EasyGost/master/config.json && mv config.json /etc/gost && chmod -R 777 /etc/gost
+    if [[ ! -d /etc/gost ]]; then
+      mkdir /etc/gost
+    fi
+    # 修改：只有在没有配置文件时才下载默认配置
+    if [[ ! -f /etc/gost/config.json ]]; then
+      wget --no-check-certificate https://raw.githubusercontent.com/KANIKIG/Multi-EasyGost/master/config.json && mv config.json /etc/gost
+    fi
+    chmod -R 777 /etc/gost
   fi
 
   systemctl enable gost && systemctl restart gost
   echo "------------------------------"
-  if test -a /usr/bin/gost -a /usr/lib/systemctl/gost.service -a /etc/gost/config.json; then
+  if test -a /usr/bin/gost -a /usr/lib/systemd/system/gost.service -a /etc/gost/config.json; then
     echo "gost安装成功"
     rm -rf "$(pwd)"/gost
     rm -rf "$(pwd)"/gost.service
     rm -rf "$(pwd)"/config.json
+    # 清理成功的备份
+    rm -rf /tmp/gost_backup_*
   else
     echo "gost没有安装成功"
+    restore_config # 新增：安装失败时恢复配置
     rm -rf "$(pwd)"/gost
     rm -rf "$(pwd)"/gost.service
     rm -rf "$(pwd)"/config.json
-    rm -rf "$(pwd)"/gost.sh
   fi
 }
 function Uninstall_ct() {
@@ -154,46 +214,57 @@ function Restart_ct() {
   echo "已重读配置并重启"
 }
 function read_protocol() {
-  echo -e "请问您要设置哪种功能: "
-  echo -e "-----------------------------------"
-  echo -e "[1] tcp+udp流量转发, 不加密"
-  echo -e "说明: 一般设置在国内中转机上"
-  echo -e "-----------------------------------"
-  echo -e "[2] 加密隧道流量转发"
-  echo -e "说明: 用于转发原本加密等级较低的流量, 一般设置在国内中转机上"
-  echo -e "     选择此协议意味着你还有一台机器用于接收此加密流量, 之后须在那台机器上配置协议[3]进行对接"
-  echo -e "-----------------------------------"
-  echo -e "[3] 解密由gost传输而来的流量并转发"
-  echo -e "说明: 对于经由gost加密中转的流量, 通过此选项进行解密并转发给本机的代理服务端口或转发给其他远程机器"
-  echo -e "      一般设置在用于接收中转流量的国外机器上"
-  echo -e "-----------------------------------"
-  echo -e "[4] 一键安装ss/socks5/http代理"
-  echo -e "说明: 使用gost内置的代理协议，轻量且易于管理"
-  echo -e "-----------------------------------"
-  echo -e "[5] 进阶：多落地均衡负载"
-  echo -e "说明: 支持各种加密方式的简单均衡负载"
-  echo -e "-----------------------------------"
-  echo -e "[6] 进阶：转发CDN自选节点"
-  echo -e "说明: 只需在中转机设置"
-  echo -e "-----------------------------------"
-  read -p "请选择: " numprotocol
+  while true; do
+    echo -e "请问您要设置哪种功能: "
+    echo -e "-----------------------------------"
+    echo -e "[1] tcp+udp流量转发, 不加密"
+    echo -e "说明: 一般设置在国内中转机上"
+    echo -e "-----------------------------------"
+    echo -e "[2] 加密隧道流量转发"
+    echo -e "说明: 用于转发原本加密等级较低的流量, 一般设置在国内中转机上"
+    echo -e "      选择此协议意味着你还有一台机器用于接收此加密流量, 之后须在那台机器上配置协议[3]进行对接"
+    echo -e "-----------------------------------"
+    echo -e "[3] 解密由gost传输而来的流量并转发"
+    echo -e "说明: 对于经由gost加密中转的流量, 通过此选项进行解密并转发给本机的代理服务端口或转发给其他远程机器"
+    echo -e "      一般设置在用于接收中转流量的国外机器上"
+    echo -e "-----------------------------------"
+    echo -e "[4] 一键安装ss/socks5/http代理"
+    echo -e "说明: 使用gost内置的代理协议，轻量且易于管理"
+    echo -e "-----------------------------------"
+    echo -e "[5] 进阶：多落地均衡负载"
+    echo -e "说明: 支持各种加密方式的简单均衡负载"
+    echo -e "-----------------------------------"
+    echo -e "[6] 进阶：转发CDN自选节点"
+    echo -e "说明: 只需在中转机设置"
+    echo -e "-----------------------------------"
+    echo -e "[00] 返回主菜单"
+    echo -e "-----------------------------------"
+    read -p "请选择: " numprotocol
 
-  if [ "$numprotocol" == "1" ]; then
-    flag_a="nonencrypt"
-  elif [ "$numprotocol" == "2" ]; then
-    encrypt
-  elif [ "$numprotocol" == "3" ]; then
-    decrypt
-  elif [ "$numprotocol" == "4" ]; then
-    proxy
-  elif [ "$numprotocol" == "5" ]; then
-    enpeer
-  elif [ "$numprotocol" == "6" ]; then
-    cdn
-  else
-    echo "type error, please try again"
-    exit
-  fi
+    if [ "$numprotocol" == "00" ]; then
+      return
+    elif [ "$numprotocol" == "1" ]; then
+      flag_a="nonencrypt"
+      break
+    elif [ "$numprotocol" == "2" ]; then
+      encrypt
+      break
+    elif [ "$numprotocol" == "3" ]; then
+      decrypt
+      break
+    elif [ "$numprotocol" == "4" ]; then
+      proxy
+      break
+    elif [ "$numprotocol" == "5" ]; then
+      enpeer
+      break
+    elif [ "$numprotocol" == "6" ]; then
+      cdn
+      break
+    else
+      echo "输入错误，请重新选择"
+    fi
+  done
 }
 function read_s_port() {
   if [ "$flag_a" == "ss" ]; then
@@ -353,6 +424,9 @@ function writerawconf() {
 }
 function rawconf() {
   read_protocol
+  if [ "$numprotocol" == "00" ]; then
+    return
+  fi
   read_s_port
   read_d_ip
   read_d_port
@@ -470,7 +544,7 @@ function cert() {
   echo -e "[2] 手动上传证书"
   echo -e "-----------------------------------"
   echo -e "说明: 仅用于落地机配置，默认使用的gost内置的证书可能带来安全问题，使用自定义证书提高安全性"
-  echo -e "     配置后对本机所有tls/wss解密生效，无需再次设置"
+  echo -e "      配置后对本机所有tls/wss解密生效，无需再次设置"
   read -p "请选择证书生成方式: " numcert
 
   if [ "$numcert" == "1" ]; then
@@ -781,7 +855,7 @@ function writeconf() {
 function show_all_conf() {
   echo -e "                      GOST 配置                        "
   echo -e "--------------------------------------------------------"
-  echo -e "序号|方法\t    |本地端口\t|目的地地址:目的地端口"
+  echo -e "序号|方法        |本地端口    |目的地地址:目的地端口"
   echo -e "--------------------------------------------------------"
 
   count_line=$(awk 'END{print NR}' $raw_conf_path)
@@ -812,7 +886,7 @@ function show_all_conf() {
     elif [ "$is_encrypt" == "decryptwss" ]; then
       str=" wss解密 "
     elif [ "$is_encrypt" == "ss" ]; then
-      str="   ss   "
+      str="    ss    "
     elif [ "$is_encrypt" == "socks" ]; then
       str=" socks5 "
     elif [ "$is_encrypt" == "http" ]; then
@@ -827,12 +901,24 @@ function show_all_conf() {
       str=""
     fi
 
-    echo -e " $i  |$str  |$s_port\t|$d_ip:$d_port"
+    printf " %-3s | %-12s | %-11s| %s:%s\n" "$i" "$str" "$s_port" "$d_ip" "$d_port"
     echo -e "--------------------------------------------------------"
   done
 }
 
-cron_restart() {
+# 修复 #8
+function show_rule_menu() {
+    clear
+    if [[ ! -f $raw_conf_path ]] || [[ ! -s $raw_conf_path ]]; then
+        echo -e "\n当前没有配置规则。"
+    else
+        show_all_conf
+    fi
+    echo -e "--------------------------------------------------------"
+    read -n 1 -s -r -p "按任意键返回主菜单..."
+}
+
+function cron_restart() {
   echo -e "------------------------------------------------------------------"
   echo -e "gost定时重启任务: "
   echo -e "-----------------------------------"
@@ -872,30 +958,211 @@ cron_restart() {
 }
 
 update_sh() {
-  ol_version=$(curl -L -s --connect-timeout 5 https://raw.githubusercontent.com/KANIKIG/Multi-EasyGost/master/gost.sh | grep "shell_version=" | head -1 | awk -F '=|"' '{print $3}')
+  ol_version=$(curl -L -s --connect-timeout 5 https://raw.githubusercontent.com/KANIKIG/Multi-EasyGost/master/gost.sh | grep "shell_version=" | head -1 | awk -F '=|"' '{print $3}' | tr -d '\r')
   if [ -n "$ol_version" ]; then
-    if [[ "$shell_version" != "$ol_version" ]]; then
-      echo -e "存在新版本，是否更新 [Y/N]?"
+    if version_gt "$ol_version" "$shell_version"; then
+      echo -e "存在新版本 (${ol_version})，是否更新 [Y/N]?"
       read -r update_confirm
       case $update_confirm in
       [yY][eE][sS] | [yY])
-        wget -N --no-check-certificate https://raw.githubusercontent.com/KANIKIG/Multi-EasyGost/master/gost.sh
-        echo -e "更新完成"
+        echo -e "正在下载新版本..."
+        wget --no-check-certificate -O "$0.tmp" https://raw.githubusercontent.com/KANIKIG/Multi-EasyGost/master/gost.sh
+        if [ $? -eq 0 ]; then
+            mv "$0.tmp" "$0"
+            chmod +x "$0"
+            echo -e "更新完成，正在重新启动脚本..."
+            exec bash "$0" "$@"
+        else
+            echo -e "${Error} 下载新版本失败。"
+            rm -f "$0.tmp"
+        fi
         exit 0
         ;;
       *) ;;
 
       esac
     else
-      echo -e "                 ${Green_font_prefix}当前版本为最新版本！${Font_color_suffix}"
+      echo -e "                      ${Green_font_prefix}当前版本为最新版本！${Font_color_suffix}"
     fi
   else
-    echo -e "                 ${Red_font_prefix}脚本最新版本获取失败，请检查与github的连接！${Font_color_suffix}"
+    echo -e "                      ${Red_font_prefix}脚本最新版本获取失败，请检查与github的连接！${Font_color_suffix}"
   fi
 }
 
-update_sh
-echo && echo -e "                 gost 一键安装配置脚本"${Red_font_prefix}[${shell_version}]${Font_color_suffix}"
+# 新增：添加规则管理菜单
+function add_rule_menu() {
+  while true; do
+    echo -e "配置已生效，当前配置如下"
+    echo -e "--------------------------------------------------------"
+    show_all_conf
+    echo -e "--------------------------------------------------------"
+    echo -e "[1] 继续添加新的转发规则"
+    echo -e "[00] 返回主菜单"
+    echo -e "--------------------------------------------------------"
+    read -p "请选择: " add_choice
+
+    if [ "$add_choice" == "1" ]; then
+      rawconf
+      if [ "$numprotocol" != "00" ]; then
+        rm -rf /etc/gost/config.json
+        confstart
+        writeconf
+        conflast
+        systemctl restart gost
+      fi
+    elif [ "$add_choice" == "00" ]; then
+      break
+    else
+      echo "输入错误，请重新选择"
+    fi
+  done
+}
+
+# 新增：删除规则管理菜单
+function delete_rule_menu() {
+  while true; do
+    clear
+    if [[ ! -f $raw_conf_path ]] || [[ ! -s $raw_conf_path ]]; then
+      echo -e "当前没有配置规则"
+      echo -e "--------------------------------------------------------"
+      echo -e "[00] 返回主菜单"
+      echo -e "--------------------------------------------------------"
+      read -p "请选择: " del_choice
+      if [ "$del_choice" == "00" ]; then
+        break
+      fi
+    else
+      show_all_conf
+      echo -e "--------------------------------------------------------"
+      echo -e "[00] 返回主菜单"
+      echo -e "--------------------------------------------------------"
+      read -p "请输入你要删除的配置编号(输入00返回主菜单)：" numdelete
+
+      if [ "$numdelete" == "00" ]; then
+        break
+      elif echo $numdelete | grep -q '^[0-9]\+$'; then
+        total_lines=$(awk 'END{print NR}' $raw_conf_path)
+        if [ "$numdelete" -gt 0 ] && [ "$numdelete" -le "$total_lines" ]; then
+          sed -i "${numdelete}d" $raw_conf_path
+          rm -rf /etc/gost/config.json
+
+          # 检查是否还有配置剩余
+          if [[ -s $raw_conf_path ]]; then
+            confstart
+            writeconf
+            conflast
+          else
+            # 如果没有配置了，创建一个空的默认配置
+            echo "{
+    \"Debug\": true,
+    \"Retries\": 0,
+    \"ServeNodes\": []
+}" >$gost_conf_path
+          fi
+
+          systemctl restart gost
+          echo -e "${Info} 配置已删除，服务已重启"
+        else
+          echo -e "${Error} 输入的编号不在有效范围内"
+        fi
+      else
+        echo -e "${Error} 请输入正确的数字"
+      fi
+    fi
+  done
+}
+
+# 新增：备份gost配置
+function backup_gost() {
+    echo -e "${Info} 开始备份gost配置..."
+    if [ ! -d "/etc/gost" ]; then
+        echo -e "${Error} 未找到gost配置目录 /etc/gost，无需备份。"
+        read -n 1 -s -r -p "按任意键返回主菜单..."
+        return
+    fi
+
+    mkdir -p ${backup_path}
+    backup_file="${backup_path}/gost_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
+    
+    tar -zcvf ${backup_file} -C /etc gost
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${Info} 备份成功！"
+        echo -e "备份文件位于: ${Green_font_prefix}${backup_file}${Font_color_suffix}"
+    else
+        echo -e "${Error} 备份失败。"
+    fi
+    read -n 1 -s -r -p "按任意键返回主菜单..."
+}
+
+# 新增：从备份恢复gost配置
+function restore_gost() {
+    echo -e "${Info} 准备从备份恢复gost配置..."
+    if [ ! -d "${backup_path}" ] || [ -z "$(ls -A ${backup_path}/*.tar.gz 2>/dev/null)" ]; then
+        echo -e "${Error} 在 ${backup_path} 目录未找到任何备份文件。"
+        read -n 1 -s -r -p "按任意键返回主菜单..."
+        return
+    fi
+
+    echo -e "可用备份文件列表:"
+    select backup_file in $(ls -r ${backup_path}/*.tar.gz); do
+        if [ -n "${backup_file}" ]; then
+            break
+        else
+            echo "无效选择，请重试。"
+        fi
+    done
+    
+    if [ -z "${backup_file}" ]; then
+        echo -e "${Info} 已取消恢复操作。"
+        return
+    fi
+
+    echo -e "你选择了恢复备份: ${Green_font_prefix}${backup_file}${Font_color_suffix}"
+    read -p "这将覆盖当前所有配置，是否继续? [y/N]: " confirm_restore
+    if [[ ! ${confirm_restore} =~ ^[yY]$ ]]; then
+        echo -e "${Info} 已取消恢复操作。"
+        return
+    fi
+
+    # 先备份当前配置，以防万一
+    if [ -d "/etc/gost" ]; then
+        echo -e "${Info} 正在备份当前配置..."
+        mv /etc/gost /etc/gost.pre-restore-bak_$(date +%Y%m%d_%H%M%S)
+        echo -e "${Info} 当前配置已备份到 /etc/gost.pre-restore-bak_..."
+    fi
+    
+    rm -rf /etc/gost
+    tar -zxvf ${backup_file} -C /etc
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${Info} 恢复成功！"
+        echo -e "请重启gost服务以使新配置生效。"
+        read -p "是否立即重启gost? [Y/n]: " confirm_restart
+        if [[ ! ${confirm_restart} =~ ^[nN]$ ]]; then
+            systemctl restart gost
+            echo -e "${Info} gost服务已重启。"
+        fi
+    else
+        echo -e "${Error} 恢复失败。"
+        echo -e "${Info} 正在尝试恢复到操作前状态..."
+        latest_pre_restore_bak=$(ls -dt /etc/gost.pre-restore-bak_* | head -1)
+        if [ -d "${latest_pre_restore_bak}" ]; then
+            rm -rf /etc/gost
+            mv ${latest_pre_restore_bak} /etc/gost
+            echo -e "${Info} 已从 ${latest_pre_restore_bak} 恢复。"
+        fi
+    fi
+    read -n 1 -s -r -p "按任意键返回主菜单..."
+}
+
+
+# 修改主循环
+function main_menu() {
+  while true; do
+    clear
+    update_sh
+    echo && echo -e "                      gost 一键安装配置脚本"${Red_font_prefix}[${shell_version}]${Font_color_suffix}"
   ----------- KANIKIG -----------
   特性: (1)本脚本采用systemd及gost配置文件对gost进行管理
         (2)能够在不借助其他工具(如screen)的情况下实现多条转发规则同时生效
@@ -903,77 +1170,87 @@ echo && echo -e "                 gost 一键安装配置脚本"${Red_font_prefi
   功能: (1)tcp+udp不加密转发, (2)中转机加密转发, (3)落地机解密对接转发
   帮助文档：https://github.com/KANIKIG/Multi-EasyGost
 
- ${Green_font_prefix}1.${Font_color_suffix} 安装 gost
- ${Green_font_prefix}2.${Font_color_suffix} 更新 gost
- ${Green_font_prefix}3.${Font_color_suffix} 卸载 gost
-————————————
- ${Green_font_prefix}4.${Font_color_suffix} 启动 gost
- ${Green_font_prefix}5.${Font_color_suffix} 停止 gost
- ${Green_font_prefix}6.${Font_color_suffix} 重启 gost
-————————————
- ${Green_font_prefix}7.${Font_color_suffix} 新增gost转发配置
- ${Green_font_prefix}8.${Font_color_suffix} 查看现有gost配置
- ${Green_font_prefix}9.${Font_color_suffix} 删除一则gost配置
-————————————
- ${Green_font_prefix}10.${Font_color_suffix} gost定时重启配置
- ${Green_font_prefix}11.${Font_color_suffix} 自定义TLS证书配置
-————————————" && echo
-read -e -p " 请输入数字 [1-9]:" num
-case "$num" in
-1)
-  Install_ct
-  ;;
-2)
-  checknew
-  ;;
-3)
-  Uninstall_ct
-  ;;
-4)
-  Start_ct
-  ;;
-5)
-  Stop_ct
-  ;;
-6)
-  Restart_ct
-  ;;
-7)
-  rawconf
-  rm -rf /etc/gost/config.json
-  confstart
-  writeconf
-  conflast
-  systemctl restart gost
-  echo -e "配置已生效，当前配置如下"
-  echo -e "--------------------------------------------------------"
-  show_all_conf
-  ;;
-8)
-  show_all_conf
-  ;;
-9)
-  show_all_conf
-  read -p "请输入你要删除的配置编号：" numdelete
-  if echo $numdelete | grep -q '[0-9]'; then
-    sed -i "${numdelete}d" $raw_conf_path
-    rm -rf /etc/gost/config.json
-    confstart
-    writeconf
-    conflast
-    systemctl restart gost
-    echo -e "配置已删除，服务已重启"
-  else
-    echo "请输入正确数字"
-  fi
-  ;;
-10)
-  cron_restart
-  ;;
-11)
-  cert
-  ;;
-*)
-  echo "请输入正确数字 [1-9]"
-  ;;
-esac
+  ${Green_font_prefix}1.${Font_color_suffix} 安装 gost
+  ${Green_font_prefix}2.${Font_color_suffix} 更新 gost
+  ${Green_font_prefix}3.${Font_color_suffix} 卸载 gost
+  ————————————
+  ${Green_font_prefix}4.${Font_color_suffix} 启动 gost
+  ${Green_font_prefix}5.${Font_color_suffix} 停止 gost
+  ${Green_font_prefix}6.${Font_color_suffix} 重启 gost
+  ————————————
+  ${Green_font_prefix}7.${Font_color_suffix} 新增gost转发配置
+  ${Green_font_prefix}8.${Font_color_suffix} 查看现有gost配置
+  ${Green_font_prefix}9.${Font_color_suffix} 删除一则gost配置
+  ————————————
+  ${Green_font_prefix}10.${Font_color_suffix} gost定时重启配置
+  ${Green_font_prefix}11.${Font_color_suffix} 自定义TLS证书配置
+  ————————————
+  ${Green_font_prefix}12.${Font_color_suffix} 备份gost配置
+  ${Green_font_prefix}13.${Font_color_suffix} 恢复gost配置
+  ————————————
+  ${Green_font_prefix}00.${Font_color_suffix} 退出脚本
+  ————————————" && echo
+    read -e -p "  请输入数字 [1-13,00]:" num
+    case "$num" in
+    1)
+      Install_ct
+      ;;
+    2)
+      checknew
+      ;;
+    3)
+      Uninstall_ct
+      ;;
+    4)
+      Start_ct
+      ;;
+    5)
+      Stop_ct
+      ;;
+    6)
+      Restart_ct
+      ;;
+    7)
+      # 修改：添加规则后返回添加规则管理菜单
+      rawconf
+      if [ "$numprotocol" != "00" ]; then
+        rm -rf /etc/gost/config.json
+        confstart
+        writeconf
+        conflast
+        systemctl restart gost
+        add_rule_menu
+      fi
+      ;;
+    8)
+      show_rule_menu # 修改：调用新的函数，避免立刻返回
+      ;;
+    9)
+      # 修改：删除规则后返回删除规则管理菜单
+      delete_rule_menu
+      ;;
+    10)
+      cron_restart
+      ;;
+    11)
+      cert
+      ;;
+    12)
+      backup_gost # 新增
+      ;;
+    13)
+      restore_gost # 新增
+      ;;
+    00)
+      echo -e "感谢使用，再见！"
+      exit 0
+      ;;
+    *)
+      echo "请输入正确数字 [1-13,00]"
+      ;;
+    esac
+  done
+}
+
+# 启动主菜单
+main_menu
